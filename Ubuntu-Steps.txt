@@ -1,0 +1,148 @@
+
+#######################
+#
+#
+#
+ELK ON SERVER:
+#
+#
+#
+#######################
+sudo apt install default-jdk
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
+sudo apt-get install apt-transport-https
+echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee -a /etc/apt/sources.list.d/elastic-7.x.list
+sudo apt-get update
+sudo apt-get install elasticsearch
+nano /etc/elasticsearch/elasticsearch.yml -> uncomment http.port: 9200 and network.host: localhost
+sudo service elasticsearch start
+sudo apt-get install kibana
+sudo service kibana start
+sudo add-apt-repository ppa:certbot/certbot
+sudo apt-get update
+sudo apt-get install nginx apache2-utils
+sudo apt-get install python-certbot-nginx
+sudo certbot --nginx -d [your-url.com]
+crontab -e as root -> @monthly root certbot -q renew
+sudo htpasswd -c /etc/nginx/htpasswd.users [your kibana admin name]
+nano /etc/nginx/sites-enabled/default
+---------------------------------
+server {
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/your-url.com/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/your-url.com/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    auth_basic "Restricted Access";
+    auth_basic_user_file /etc/nginx/htpasswd.users;
+
+    location / {
+        proxy_pass http://localhost:5601;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+
+server {
+    if ($host = your-url.com) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    listen 80 ;
+    listen [::]:80 ;
+    server_name your-url.com;
+    return 404; # managed by Certbot
+}
+---------------------------------------------------
+nginx -t
+service nginx restart
+sudo apt-get install logstash
+sudo mkdir -p /etc/elk-certs
+cd /etc/elk-certs
+sudo openssl req -subj '/CN=your-url.com/' -x509 -days 3650 -batch -nodes -newkey rsa:2048 -keyout elk-ssl.key -out elk-ssl.crt
+chown logstash elk-ssl.crt
+chown logstash elk-ssl.key
+nano /etc/logstash/logstash.yml -> uncomment path.data: /var/lib/logstash path.config: /etc/logstash/conf.d path.logs: /var/log/logstash
+nano /etc/logstash/conf.d/logstash-nginx-es.conf
+==========================================================
+input {
+    beats {
+        port => 5400
+        ssl => true
+        ssl_certificate_authorities => ["/etc/elk-certs/elk-ssl.crt"]
+        ssl_certificate => "/etc/elk-certs/elk-ssl.crt"
+        ssl_key => "/etc/elk-certs/elk-ssl.key"
+        ssl_verify_mode => "force_peer"
+    }
+}
+
+filter {
+ grok {
+   match => [ "message" , "%{COMBINEDAPACHELOG}+%{GREEDYDATA:extra_fields}"]
+   overwrite => [ "message" ]
+ }
+ mutate {
+   convert => ["response", "integer"]
+   convert => ["bytes", "integer"]
+   convert => ["responsetime", "float"]
+ }
+ geoip {
+   source => "clientip"
+   add_tag => [ "nginx-geoip" ]
+ }
+ date {
+   match => [ "timestamp" , "dd/MMM/YYYY:HH:mm:ss Z" ]
+   remove_field => [ "timestamp" ]
+ }
+ useragent {
+   source => "agent"
+ }
+}
+
+output {
+ elasticsearch {
+   hosts => ["localhost:9200"]
+   index => "weblogs-%{+YYYY.MM.dd}"
+   document_type => "nginx_logs"
+ }
+ stdout { codec => rubydebug }
+}
+======================================================
+systemctl enable logstash
+sudo systemctl restart logstash.service
+
+
+#######################
+#
+#
+#
+FILEBEAT ON CLIENTS:
+#
+#
+#
+#######################
+sudo apt install default-jdk
+wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | sudo apt-key add -
+echo "deb https://artifacts.elastic.co/packages/7.x/apt stable main" | sudo tee -a /etc/apt/sources.list.d/elastic-7.x.list
+sudo apt-get update
+sudo apt-get install filebeat
+nano /etc/filebeat/filebeat/yml
+========================================
+filebeat.inputs:
+- type: log
+  paths:
+    - /var/log/nginx/*.log
+  exclude_files: ['\.gz$']
+
+output.logstash:
+  hosts: ["my-elk-stack-vps.com:5400"]
+  ssl.certificate_authorities: ["/etc/elk-certs/elk-ssl.crt"]
+  ssl.certificate: "/etc/elk-certs/elk-ssl.crt"
+  ssl.key: "/etc/elk-certs/elk-ssl.key"
+  =======================================
+sudo systemctl restart filebeat
