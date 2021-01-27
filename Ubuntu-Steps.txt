@@ -140,7 +140,7 @@ filebeat.inputs:
   exclude_files: ['\.gz$']
 
 output.logstash:
-  hosts: ["my-elk-stack-vps.com:5400"]
+  hosts: ["your-url.com:5400"]
   ssl.certificate_authorities: ["/etc/elk-certs/elk-ssl.crt"]
   ssl.certificate: "/etc/elk-certs/elk-ssl.crt"
   ssl.key: "/etc/elk-certs/elk-ssl.key"
